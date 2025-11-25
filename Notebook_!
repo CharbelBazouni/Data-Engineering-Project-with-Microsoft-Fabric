@@ -1,0 +1,67 @@
+import requests
+import json
+
+# Construct the API URL with start and end dates provided by Data Factory, formatted for geojson output.
+url = f"https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&starttime={start_date}&endtime={end_date}"
+
+# Make the GET request to fetch data
+response = requests.get(url)
+
+# Check if the request was successful
+if response.status_code == 200:
+    # Get the JSON response
+    data = response.json()
+    data = data['features']
+    
+    # Specify the file name (and path if needed)
+    file_path = f'/lakehouse/default/Files/{start_date}_earthquake_data.json'
+    
+    # Open the file in write mode ('w') and save the JSON data
+    with open(file_path, 'w') as file:
+        # The `json.dump` method serializes `data` as a JSON formatted stream to `file`
+        # `indent=4` makes the file human-readable by adding whitespace
+        json.dump(data, file, indent=4)
+        
+    print(f"Data successfully saved to {file_path}")
+else:
+    print("Failed to fetch data. Status code:", response.status_code)
+
+
+
+from pyspark.sql.functions import col
+from pyspark.sql.types import TimestampType
+     
+
+# df now is a Spark DataFrame containing JSON data
+df = spark.read.option("multiline", "true").json(f"Files/{start_date}_earthquake_data.json")
+     
+
+# Reshape earthquake data by extracting and renaming key attributes for further analysis.
+df = \
+df.\
+    select(
+        'id',
+        col('geometry.coordinates').getItem(0).alias('longitude'),
+        col('geometry.coordinates').getItem(1).alias('latitude'),
+        col('geometry.coordinates').getItem(2).alias('elevation'),
+        col('properties.title').alias('title'),
+        col('properties.place').alias('place_description'),
+        col('properties.sig').alias('sig'),
+        col('properties.mag').alias('mag'),
+        col('properties.magType').alias('magType'),
+        col('properties.time').alias('time'),
+        col('properties.updated').alias('updated')
+        )
+     
+
+# Convert 'time' and 'updated' columns from milliseconds to timestamp format for clearer datetime representation.
+df = df.\
+    withColumn('time', col('time')/1000).\
+    withColumn('updated', col('updated')/1000).\
+    withColumn('time', col('time').cast(TimestampType())).\
+    withColumn('updated', col('updated').cast(TimestampType()))
+     
+
+# appending the data to the gold table
+df.write.mode('append').saveAsTable('earthquake_events_silver')
+     
